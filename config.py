@@ -10,8 +10,14 @@ ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 # ID голосового канала который слушаем
 DISCORD_VOICE_CHANNEL_ID = int(os.getenv("DISCORD_VOICE_CHANNEL_ID", "0"))
-# ID пользователя чью речь транскрибируем (админ DC). Остальных игнорируем.
-DISCORD_ADMIN_USER_ID = int(os.getenv("DISCORD_ADMIN_USER_ID", "784124183223205950"))
+# ID пользователей чью речь транскрибируем (админы DC). Остальных игнорируем.
+# Через запятую в переменной окружения, например: "412232409291948042,784124183223205950"
+_DEFAULT_ADMIN_IDS = "412232409291948042,784124183223205950"
+DISCORD_ADMIN_USER_IDS = [
+    int(x.strip())
+    for x in os.getenv("DISCORD_ADMIN_USER_IDS", _DEFAULT_ADMIN_IDS).split(",")
+    if x.strip()
+]
 
 # OpenAI Whisper API
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

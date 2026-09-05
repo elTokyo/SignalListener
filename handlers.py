@@ -58,5 +58,5 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"{status}\n"
         f"Канал ID: {config.DISCORD_VOICE_CHANNEL_ID}\n"
-        f"Админ DC user_id: {config.DISCORD_ADMIN_USER_ID}"
+        f"Админы DC user_id: {config.DISCORD_ADMIN_USER_IDS}"
     )

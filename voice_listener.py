@@ -29,32 +29,34 @@ logger = logging.getLogger(__name__)
 _bot: Optional[discord.Bot] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _voice_client: Optional[discord.VoiceClient] = None
-_active_buffer: Optional[UserAudioBuffer] = None
+_active_buffers: dict[int, UserAudioBuffer] = {}  # user_id -> его буфер
 _telegram_sender = None  # async callable(text) — устанавливается извне
 
 
 class AdminSink(Sink):
     """
-    Кастомный Sink: пропускает PCM только от админа в его UserAudioBuffer.
-    Остальных пользователей игнорирует.
+    Кастомный Sink: пропускает PCM только от админов, каждого — в его
+    собственный UserAudioBuffer (чтобы речь нескольких людей не смешивалась
+    в один поток). Остальных пользователей игнорирует.
     """
 
-    def __init__(self, buffer: UserAudioBuffer):
+    def __init__(self, buffers: dict[int, UserAudioBuffer]):
         # filters=None отключает фильтрацию (берём всё, фильтр по user_id вручную)
         super().__init__()
         self.encoding = "pcm"
         self.vc = None
         self.audio_data = {}
-        self._buffer = buffer
+        self._buffers = buffers
 
     @Filters.container
     def write(self, data: bytes, user: int):
         # data — сырое PCM (после декодирования Opus): 48kHz/16bit/stereo
         # user — Discord user_id говорящего
-        if user != config.DISCORD_ADMIN_USER_ID:
+        buffer = self._buffers.get(user)
+        if buffer is None:
             return
         try:
-            self._buffer.feed(data)
+            buffer.feed(data)
         except Exception as e:
             logger.exception(f"AdminSink.write error: {e}")
 
@@ -91,7 +93,7 @@ def set_telegram_sender(fn):
 
 async def start_listening_async() -> tuple[bool, str]:
     """Подключиться к голосовому каналу и начать запись."""
-    global _voice_client, _active_buffer
+    global _voice_client, _active_buffers
 
     if _voice_client and _voice_client.is_connected():
         return False, "Уже подключён к голосовому каналу"
@@ -111,15 +113,19 @@ async def start_listening_async() -> tuple[bool, str]:
         logger.exception(f"connect error: {e}")
         return False, f"Ошибка подключения: {e}"
 
-    # Создаём буфер для админа и Sink
-    _active_buffer = UserAudioBuffer(
-        user_id=config.DISCORD_ADMIN_USER_ID,
-        on_chunk_ready=_on_chunk_ready,
-        loop=_loop,
-    )
-    _active_buffer.start_watcher()
+    # Создаём отдельный буфер для каждого админа и Sink
+    _active_buffers = {
+        admin_id: UserAudioBuffer(
+            user_id=admin_id,
+            on_chunk_ready=_on_chunk_ready,
+            loop=_loop,
+        )
+        for admin_id in config.DISCORD_ADMIN_USER_IDS
+    }
+    for buffer in _active_buffers.values():
+        buffer.start_watcher()
 
-    sink = AdminSink(_active_buffer)
+    sink = AdminSink(_active_buffers)
 
     def _stop_callback(sink, *args):
         # Колбэк вызывается py-cord когда запись остановлена. Ничего особенного.
@@ -134,16 +140,16 @@ async def start_listening_async() -> tuple[bool, str]:
         except Exception:
             pass
         _voice_client = None
-        _active_buffer = None
+        _active_buffers = {}
         return False, f"Не удалось начать запись: {e}"
 
-    logger.info(f"Слушаю канал {channel.name}, админ user_id={config.DISCORD_ADMIN_USER_ID}")
-    return True, f"Подключился к «{channel.name}», слушаю админа"
+    logger.info(f"Слушаю канал {channel.name}, админы user_id={config.DISCORD_ADMIN_USER_IDS}")
+    return True, f"Подключился к «{channel.name}», слушаю админов"
 
 
 async def stop_listening_async() -> tuple[bool, str]:
     """Остановить запись и выйти из канала."""
-    global _voice_client, _active_buffer
+    global _voice_client, _active_buffers
 
     if not _voice_client or not _voice_client.is_connected():
         return False, "Не подключён к голосовому каналу"
@@ -153,9 +159,9 @@ async def stop_listening_async() -> tuple[bool, str]:
     except Exception as e:
         logger.warning(f"stop_recording: {e}")
 
-    if _active_buffer:
-        await _active_buffer.stop()
-        _active_buffer = None
+    for buffer in _active_buffers.values():
+        await buffer.stop()
+    _active_buffers = {}
 
     try:
         await _voice_client.disconnect()
@@ -196,6 +202,12 @@ def is_listening() -> bool:
 def run_discord_bot():
     """Блокирующий вызов, запускает discord.Bot в текущем потоке."""
     global _bot, _loop
+
+    # py-cord/discord.py дергает asyncio.get_event_loop() при создании Bot,
+    # а начиная с Python 3.10+ в НЕ-главном потоке это больше не создаёт
+    # loop автоматически — нужно завести и установить его явно.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     intents = discord.Intents.default()
     intents.voice_states = True

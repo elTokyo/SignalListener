@@ -35,10 +35,11 @@ async def transcribe(wav_bytes: bytes) -> str:
         data.add_field("language", config.WHISPER_LANGUAGE)
     data.add_field("response_format", "text")
 
+    timeout = aiohttp.ClientTimeout(total=60)
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                WHISPER_URL, headers=headers, data=data, timeout=60
+                WHISPER_URL, headers=headers, data=data, timeout=timeout
             ) as resp:
                 text = (await resp.text()).strip()
                 if resp.status != 200:

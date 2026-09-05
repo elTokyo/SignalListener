@@ -107,10 +107,33 @@ async def start_listening_async() -> tuple[bool, str]:
     if not isinstance(channel, discord.VoiceChannel):
         return False, "Указанный канал не голосовой"
 
+    # На случай если предыдущая попытка подключения оборвалась на середине
+    # handshake (например voice gateway закрыл сессию кодом 4006) —
+    # библиотека может считать что guild уже имеет активный voice_client,
+    # хотя наша _voice_client уже сброшена. Чистим это состояние явно
+    # перед новой попыткой, иначе получим "Already connected to a voice
+    # channel" на ровном месте.
+    stale_vc = channel.guild.voice_client
+    if stale_vc is not None:
+        try:
+            await stale_vc.disconnect(force=True)
+        except Exception as e:
+            logger.warning(f"cleanup stale voice_client: {e}")
+    _voice_client = None
+
     try:
         _voice_client = await channel.connect()
     except Exception as e:
         logger.exception(f"connect error: {e}")
+        # Тоже подчищаем на случай частично установленного состояния,
+        # чтобы следующая попытка не упёрлась в "Already connected".
+        stale_vc = channel.guild.voice_client
+        if stale_vc is not None:
+            try:
+                await stale_vc.disconnect(force=True)
+            except Exception:
+                pass
+        _voice_client = None
         return False, f"Ошибка подключения: {e}"
 
     # Создаём отдельный буфер для каждого админа и Sink
